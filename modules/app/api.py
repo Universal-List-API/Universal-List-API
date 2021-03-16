@@ -68,11 +68,12 @@ async def new_list(request: Request, blist: BList):
     rc = list_check(blist)
     if rc:
         return rc
+    api_token = str(uuid.uuid4())
     try:
-        await db.execute("INSERT INTO bot_list (url, icon, api_url, discord, description, supported_features, queue, api_token, owners) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", blist.url, blist.icon, blist.api_url, blist.discord, blist.description, blist.supported_features, True, str(uuid.uuid4()), blist.owners)
+        await db.execute("INSERT INTO bot_list (url, icon, api_url, discord, description, supported_features, queue, api_token, owners) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", blist.url, blist.icon, blist.api_url, blist.discord, blist.description, blist.supported_features, True, api_token, blist.owners)
     except asyncpg.exceptions.UniqueViolationError:
         return ORJSONResponse({"message": "Botlist already exists", "code": 1002}, status_code = 400)
-    return {"message": "Botlist Added :)", "code": 1003}
+    return {"message": "Botlist Added :)", "api_token": api_token, "code": 1003}
 
 @router.patch("/list/{url}")
 async def edit_list(request: Request, url: str, blist: BList, API_Token: str = Header("")):
