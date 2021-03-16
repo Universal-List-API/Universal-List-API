@@ -21,6 +21,12 @@ class BList(BaseModel):
     supported_features: List[int]
     owners: List[int]
 
+class Endpoint(BaseModel):
+    method: int
+    feature: int
+    api_path: str
+    supported_fields: dict
+
 @router.get("/")
 async def index(request: Request):
     return {"message": "Pong!", "code": 1003}
@@ -87,22 +93,29 @@ async def delete_list(request: Request, url: str, API_Token: str = Header("")):
     await db.execute("DELETE FROM bot_list WHERE url = $1", url)
     return {"message": "Botlist Deleted. We are sad to see you go :(", "code": 1003}
 
+@router.put("/list/{url}/endpoints")
+async def new_endpoint(request: Request, url: str, endpoint: Endpoint):
+    pass
+
 @router.post("/bots/{bot_id}/stats")
 async def post_stats(request: Request, bot_id: int, stats: Stats):
+    """
+        Post stats to all lists, takes a LIST_URL: LIST_API_TOKEN in the list_auth object in request body.
+    """
     posted_lists = {"code": 1003}
     for blist in stats.list_auth.keys():
 
         api_url = await db.fetchrow("SELECT api_url, queue FROM bot_list WHERE url = $1", blist)
         if api_url is None:
-            posted_lists[blist] = {"posted": False, "reason": "List does not exist", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "code": 1004}
+            posted_lists[blist] = {"posted": False, "reason": "List does not exist", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "method": None, "code": 1004}
             continue 
     
         if api_url["queue"]:
-            posted_lists[blist] = {"posted": False, "reason": "List still in queue", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "code": 1005}
+            posted_lists[blist] = {"posted": False, "reason": "List still in queue", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "method": None, "code": 1005}
 
-        api = await db.fetchrow("SELECT supported_fields, api_path FROM bot_list_api WHERE url = $1 AND method = 2", blist) # Method 2 = Post Stats
+        api = await db.fetchrow("SELECT supported_fields, api_path, method FROM bot_list_api WHERE url = $1 AND feature = 2", blist) # Feature 2 = Post Stats
         if api is None:
-            posted_lists[blist] = {"posted": False, "reason": "List doesn't support requested method", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "code": 1006}
+            posted_lists[blist] = {"posted": False, "reason": "List doesn't support requested method", "response": None, "status_code": None, "api_url": None, "api_path": None, "sent_data": None, "success": False, "method": None, "code": 1006}
             continue # List doesn't support requested method
         
         api_url = api_url['api_url']
@@ -119,10 +132,23 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
         
         api_path = api['api_path'].replace("{id}", str(bot_id)) # Get the API path
 
+        if api["method"] == 1:
+            f = requests.get
+        elif api["method"] == 2:
+            f = requests.post
+        elif api["method"] == 3:
+            f = requests.patch
+        elif api["method"] == 4:
+            f = requests.put
+        elif api["method"] == 5:
+            f = requests.delete
+        else:
+            posted_lists[blist] = {"posted": False, "reason": "Invalid request method defined on this API", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "method": None, "code": 1007}
+
         try:
-            rc = await requests.post("https://" + api_url + api_path, json = send_json, headers = {"Authorization": str(stats.list_auth[blist])}, timeout = 15)
+            rc = await f("https://" + api_url + api_path, json = send_json, headers = {"Authorization": str(stats.list_auth[blist])}, timeout = 15)
         except Exception as e:
-            posted_lists[blist] = {"posted": False, "reason": f"Could not connect/find server: {e}", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "code": 1007}
+            posted_lists[blist] = {"posted": False, "reason": f"Could not connect/find server: {e}", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "method": api["method"], "code": 1008}
             continue
         
         try:
@@ -130,5 +156,5 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
         except:
             response = await rc.text()
 
-        posted_lists[blist] = {"posted": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": rc.status == 200, "code": 1003}
+        posted_lists[blist] = {"posted": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": rc.status == 200, "method": api["method"], "code": 1003}
     return posted_lists

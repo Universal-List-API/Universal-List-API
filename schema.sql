@@ -18,7 +18,7 @@ CREATE TABLE bot_list_feature (
 );
 
 CREATE TABLE bot_list_api (
-	url TEXT NOT NULL UNIQUE,
+	url TEXT NOT NULL,
 	method INTEGER, -- 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
 	feature INTEGER, -- 1 = Get Bot, 2 = Post Stats
 	supported_fields JSONB, -- Supported fields
