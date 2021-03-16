@@ -2,6 +2,7 @@ from ..deps import *
 
 router = APIRouter(
     tags = ["API"],
+    prefix="/api",
     include_in_schema = True
 )
 
@@ -33,7 +34,7 @@ async def index(request: Request):
 
 @router.get("/legal")
 async def legal(request: Request):
-    return {"message": "NGBB-Proto may potentially collect your IP address for ratelimiting. If you do not agree to this, please stop using this service immediately.", "code": 1003}
+    return {"message": "Universal List API may potentially collect your IP address for ratelimiting. If you do not agree to this, please stop using this service immediately.", "code": 1003}
 
 @router.get("/lists")
 async def get_lists(request: Request):
@@ -121,6 +122,21 @@ async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token
     await db.execute("INSERT INTO bot_list_api (url, method, feature, supported_fields, api_path) VALUES ($1, $2, $3, $4, $5)", url, endpoint.method, endpoint.feature, orjson.dumps(endpoint.supported_fields).decode('utf-8'), endpoint.api_path)
     return {"message": "Added endpoint successfully", "code": 1003}
 
+def get_method(method: str):
+    if method == 1:
+        f = requests.get
+    elif method == 2:
+        f = requests.post
+    elif method == 3:
+        f = requests.patch
+    elif method == 4:
+        f = requests.put
+    elif method == 5:
+        f = requests.delete
+    else:
+        return None
+    return f
+
 
 @router.post("/bots/{bot_id}/stats")
 async def post_stats(request: Request, bot_id: int, stats: Stats):
@@ -157,17 +173,8 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
         
         api_path = api['api_path'].replace("{id}", str(bot_id)) # Get the API path
 
-        if api["method"] == 1:
-            f = requests.get
-        elif api["method"] == 2:
-            f = requests.post
-        elif api["method"] == 3:
-            f = requests.patch
-        elif api["method"] == 4:
-            f = requests.put
-        elif api["method"] == 5:
-            f = requests.delete
-        else:
+        f = get_method(api["method"])
+        if not f:
             posted_lists[blist] = {"posted": False, "reason": "Invalid request method defined on this API", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "method": None, "code": 1007}
 
         try:
@@ -183,6 +190,40 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
 
         posted_lists[blist] = {"posted": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": rc.status == 200, "method": api["method"], "code": 1003}
     return posted_lists
+
+# TODO: Do List Processing
+@router.get("/bots/{bot_id}")
+async def get_bot(request: Request, bot_id: int):
+    lists = await db.fetch("SELECT api_url, url FROM bot_list WHERE queue = false")
+    if not lists:
+        return ORJSONResponse({"message": "No lists found!"}, status_code = 404)
+
+    get_lists = {"code": 1003}
+    for blist in lists:
+        api = await db.fetchrow("SELECT supported_fields, api_path, method FROM bot_list_api WHERE url = $1 AND feature = 1", blist["url"]) # Feature 1 = Get Bot
+        if not api:
+            get_lists[blist["url"]] = {"got": False, "reason": "List doesn't support requested method", "response": None, "status_code": None, "api_url": None, "api_path": None, "success": False, "method": None, "code": 1006}
+            continue
+        api_path = api['api_path'].replace("{id}", str(bot_id)) # Get the API path
+        api_url = blist["api_url"]
+
+        f = get_method(api["method"])
+        if not f:
+            get_lists[blist["url"]] = {"got": False, "reason": "Invalid request method defined on this API", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "success": False, "method": None, "code": 1007}
+            continue
+        try:
+            rc = await f("https://" + api_url + api_path, headers = {"Authorization": "UniversalListAPI_GlobalAuth"}, timeout = 15)
+        except Exception as e:
+            get_lists[blist["url"]] = {"got": False, "reason": f"Could not connect/find server: {e}", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "success": False, "method": api["method"], "code": 1008}
+            continue
+
+        try:
+            response = await rc.json()
+        except:
+            response = await rc.text()
+        
+        get_lists[blist["url"]] = {"got": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "success": rc.status == 200, "method": api["method"], "code": 1003}
+    return get_lists
 
 @router.get("/feature/{id}/id")
 async def get_feature_by_id(request: Request, id: int):
