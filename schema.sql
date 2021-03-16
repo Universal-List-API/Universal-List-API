@@ -11,6 +11,7 @@ CREATE TABLE bot_list (
 );
 
 CREATE TABLE bot_list_feature (
+	feature_id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL UNIQUE,
 	iname TEXT NOT NULL UNIQUE, -- Internal Name
 	description TEXT,
@@ -18,7 +19,7 @@ CREATE TABLE bot_list_feature (
 );
 
 CREATE TABLE bot_list_api (
-	id SERIAL PRIMARY KEY, -- Django'isms
+	id SERIAL PRIMARY KEY, -- Django'isms and good for us
 	url TEXT NOT NULL,
 	method INTEGER, -- 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
 	feature INTEGER, -- 1 = Get Bot, 2 = Post Stats

@@ -59,6 +59,8 @@ def list_check(blist: BList):
     blist.api_url = blist.api_url.replace("https://", "")
     if len(blist.url.split(".")) < 2 or len(blist.api_url.split(".")) < 2:
         return ORJSONResponse({"message": "url and api_url keys must be proper URLs", "code": 1001}, status_code = 400)
+    if len(blist.supported_features) > 20:
+        return ORJSONResponse({"message": "Too many features have been set. To prevent abuse, you may only set 20 features", "code": 1010}, status_code = 400)
     return None
 
 @router.put("/lists")
@@ -94,8 +96,30 @@ async def delete_list(request: Request, url: str, API_Token: str = Header("")):
     return {"message": "Botlist Deleted. We are sad to see you go :(", "code": 1003}
 
 @router.put("/list/{url}/endpoints")
-async def new_endpoint(request: Request, url: str, endpoint: Endpoint):
-    pass
+async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token: str = Header("")):
+    """
+        Make a new endpoint (Get Bot or Post Stats for right now):
+
+        Method: 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
+
+        Feature: 1 = Get Bot, 2 = Post Stats
+    """
+    if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
+        pass
+    else:
+        return abort(401)
+    if not endpoint.api_path.startswith("/"):
+        return ORJSONResponse({"message": "API Path must start with /", "code": 1011}, status_code = 400)
+    if endpoint.method not in (1, 2, 3, 4, 5):
+        return ORJSONResponse({"message": "Endpoint method must be between 1 to 5, see API Docs for more info", "code": 1012}, status_code = 400)
+    if endpoint.feature not in (1, 2):
+        return ORJSONResponse({"message": "Endpoint feature must be 1 or 2 right now, see API Docs for more info", "code": 1013}, status_code = 400)
+    check = await db.fetchrow("SELECT api_path FROM bot_list_api WHERE feature = $1 AND url = $2", endpoint.feature, url)
+    if check:
+        return ORJSONResponse({"message": "Endpoint cannot be created as its feature type already exists for your list!", "code": 1013}, status_code = 400)
+    await db.execute("INSERT INTO bot_list_api (url, method, feature, supported_fields, api_path) VALUES ($1, $2, $3, $4, $5)", url, endpoint.method, endpoint.feature, orjson.dumps(endpoint.supported_fields).decode('utf-8'), endpoint.api_path)
+    return {"message": "Added endpoint successfully", "code": 1003}
+
 
 @router.post("/bots/{bot_id}/stats")
 async def post_stats(request: Request, bot_id: int, stats: Stats):
@@ -158,3 +182,12 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
 
         posted_lists[blist] = {"posted": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": rc.status == 200, "method": api["method"], "code": 1003}
     return posted_lists
+
+@router.get("/feature/{id}/id")
+async def get_feature_by_id(request: Request, id: int):
+    return {"feature": (await db.fetchrow('SELECT name, iname as internal_name, description, positive, feature_id AS id FROM bot_list_feature WHERE feature_id = $1', id))}
+
+@router.get("/feature/{iname}/iname")
+async def get_feature_by_internal_name(request: Request, iname: str):
+    return {"feature": (await db.fetchrow('SELECT name, iname as internal_name, description, positive, feature_id AS id FROM bot_list_feature WHERE iname = $1', iname))}
+
