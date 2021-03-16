@@ -5,7 +5,9 @@ CREATE TABLE bot_list (
 	discord TEXT,
 	description TEXT,
 	supported_features INTEGER[],
-	api_token TEXT
+	api_token TEXT,
+	queue BOOLEAN DEFAULT FALSE,
+	owners BIGINT[] DEFAULT '{}'
 );
 
 CREATE TABLE bot_list_feature (

@@ -46,7 +46,7 @@ def ip_check(request: Request) -> str:
     return request.client.host
 
 limiter = FastAPILimiter
-app = FastAPI(default_response_class = ORJSONResponse, docs_url = None, redoc_url = "/api/docs")
+app = FastAPI(default_response_class = ORJSONResponse)
 app.add_middleware(SessionMiddleware, secret_key=session_key)
 app.add_middleware(CSRFProtectMiddleware, csrf_secret=csrf_secret)
 app.add_middleware(ProxyHeadersMiddleware)
