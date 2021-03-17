@@ -2,16 +2,17 @@ from ..deps import *
 
 router = APIRouter(
     tags = ["API"],
-    prefix="/api",
     include_in_schema = True
 )
 
 # Base Models
 
-class Stats(BaseModel):
+class Lists(BaseModel):
+    lists: dict
+
+class Stats(Lists):
     server_count: int
     shard_count: int
-    lists: dict
 
 class BList(BaseModel):
     url: str
@@ -102,18 +103,18 @@ def ep_check(endpoint):
         return ORJSONResponse({"message": "API Path must start with /", "code": 1011}, status_code = 400)
     if endpoint.method not in (1, 2, 3, 4, 5):
         return ORJSONResponse({"message": "Endpoint method must be between 1 to 5, see API Docs for more info", "code": 1012}, status_code = 400)
-    if endpoint.feature not in (1, 2):
+    if endpoint.feature not in (1, 2, 3):
         return ORJSONResponse({"message": "Endpoint feature must be 1 or 2 right now, see API Docs for more info", "code": 1013}, status_code = 400)
     return None
 
 @router.put("/list/{url}/endpoints")
 async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token: str = Header("")):
     """
-        Make a new endpoint (Get Bot or Post Stats for right now):
+        Make a new endpoint:
 
         Method: 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
 
-        Feature: 1 = Get Bot, 2 = Post Stats
+        Feature: 1 = Get Bot, 2 = Post Stats, 3 = Get User Voted 
     """
     if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
         pass
@@ -131,11 +132,11 @@ async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token
 @router.patch("/list/{url}/endpoints")
 async def edit_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token: str = Header("")):
     """
-        Edits an existing endpoint (Get Bot or Post Stats for right now). Note that the feature type cannot be changed and must already exist:
+        Edits an existing endpoint. Note that the feature type cannot be changed and must already exist:
 
         Method: 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
 
-        Feature: 1 = Get Bot, 2 = Post Stats
+        Feature: 1 = Get Bot, 2 = Post Stats, 3 = Get User Voted 
     """
     if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
         pass
@@ -153,9 +154,9 @@ async def edit_endpoint(request: Request, url: str, endpoint: Endpoint, API_Toke
 @router.delete("/list/{url}/endpoint/{feature}")
 async def delete_endpoint(request: Request, url: str, feature: int, API_Token: str = Header("")):
     """
-        Deletes an existing endpoint (Get Bot or Post Stats for right now). Note that the endpoint must already exist or this won't do anything. There will not be a error if the endpoint doesn't already exists or if a invalid feature type is passed
+        Deletes an existing endpoint. Note that the endpoint must already exist or this won't do anything. There will not be a error if the endpoint doesn't already exist or if a invalid feature type is passed, it simply won't do anything
 
-        Feature: 1 = Get Bot, 2 = Post Stats
+        Feature: 1 = Get Bot, 2 = Post Stats, 3 = Get User Voted 
     """
     if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
         pass
@@ -178,7 +179,6 @@ def get_method(method: str):
     else:
         return None
     return f
-
 
 @router.post("/bots/{bot_id}/stats")
 async def post_stats(request: Request, bot_id: int, stats: Stats):
@@ -213,7 +213,7 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
             else:
                 continue
         
-        api_path = api['api_path'].replace("{id}", str(bot_id)) # Get the API path
+        api_path = api['api_path'].replace("{id}", str(bot_id)).replace("{bot_id}", str(bot_id)) # Get the API path
 
         f = get_method(api["method"])
         if not f:
@@ -246,7 +246,7 @@ async def get_bot(request: Request, bot_id: int):
         if not api:
             get_lists[blist["url"]] = {"got": False, "reason": "List doesn't support requested method", "response": None, "status_code": None, "api_url": None, "api_path": None, "success": False, "method": None, "code": 1006}
             continue
-        api_path = api['api_path'].replace("{id}", str(bot_id)) # Get the API path
+        api_path = api['api_path'].replace("{id}", str(bot_id)).replace("{bot_id}", str(bot_id)) # Get the API path
         api_url = blist["api_url"]
 
         f = get_method(api["method"])
@@ -266,6 +266,70 @@ async def get_bot(request: Request, bot_id: int):
         
         get_lists[blist["url"]] = {"got": True, "reason": None, "response": response, "status_code": rc.status, "api_url": api_url, "api_path": api_path, "success": rc.status == 200, "method": api["method"], "code": 1003}
     return get_lists
+
+@router.post("/bots/{bot_id}/votes/check")
+async def get_user_voted(request: Request, bot_id: int, user_id: int, lists: Lists):
+    """
+        Gets whether a user has voted for your bot. Takes a lists dict
+    """
+    guv_lists = {"code": 1003}
+    for blist in lists.lists.keys():
+
+        api_url = await db.fetchrow("SELECT api_url, queue FROM bot_list WHERE url = $1", blist)
+        if api_url is None:
+            guv_lists[blist] = {"voted": False, "reason": "List does not exist", "response": None, "code": 1004}
+            continue
+
+        if api_url["queue"]:
+            guv_lists[blist] = {"voted": False, "reason": "List still in queue", "response": None, "code": 1005}
+
+        api = await db.fetchrow("SELECT supported_fields, api_path, method FROM bot_list_api WHERE url = $1 AND feature = 3", blist) # Feature 3 = Get User Voted
+        if api is None:
+            guv_lists[blist] = {"voted": False, "reason": "List doesn't support requested method", "response": None, "code": 1006}
+            continue # List doesn't support requested method
+
+        api_url = api_url['api_url']
+        sf = api["supported_fields"]
+        sf = orjson.loads(sf)
+        # Get corresponding list values for guv
+        qkey = ""
+        jsonkey = ""
+        for key in supported_fields_guv:
+            field = sf.get(key)
+            if field and key == "res_voted":
+                jsonkey = field
+            elif field and key == "user_id":
+                qkey = field
+            else:
+                continue
+        
+        if qkey == "" or jsonkey == "":
+            guv_lists[blist] = {"voted": False, "reason": "Required keys user_id and/or jsonkey not defined on list", "response": None, "code": 1049}
+            continue
+
+        api_path = api['api_path'].replace("{id}", str(bot_id)).replace("{bot_id}", str(bot_id)) # Get the API path
+
+        f = get_method(api["method"])
+        if not f:
+            guv_lists[blist] = {"voted": False, "reason": "Invalid request method defined on this API", "response": None, "code": 1007}
+            continue
+        try:
+            print("https://" + api_url + api_path + f"?{qkey}={user_id}")
+            rc = await f("https://" + api_url + api_path + f"?{qkey}={user_id}", headers = {"Authorization": str(lists.lists[blist])}, timeout = 15)
+        except Exception as e:
+            guv_lists[blist] = {"voted": False, "reason": f"Could not connect/find server: {e}", "response": None, "code": 1008}
+            continue
+
+        try:
+            response = await rc.json()
+        except Exception as e:
+            guv_lists[blist] = {"voted": False, "reason": f"Malformed JSON response: {e}", "response": None, "code": 1050}
+            continue
+
+        guv_lists[blist] = {"voted": response.get(jsonkey) == True or response.get(jsonkey) == 1, "reason": "Got response from list", "response": response, "code": 1003}
+    return guv_lists
+
+        
 
 @router.get("/feature/{id}/id")
 async def get_feature_by_id(request: Request, id: int):

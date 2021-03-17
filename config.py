@@ -40,3 +40,4 @@ pg_user = 'rootspring'
 site_url = "https://" + site
 
 supported_fields_posting = ("server_count", "shard_count", "shards", "shard_id")
+supported_fields_guv = ('user_id', 'res_voted')
