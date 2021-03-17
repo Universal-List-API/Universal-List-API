@@ -38,3 +38,5 @@ pg_user = 'rootspring'
 
 # This value below dont need to be changed
 site_url = "https://" + site
+
+supported_fields_posting = ("server_count", "shard_count", "shards", "shard_id")

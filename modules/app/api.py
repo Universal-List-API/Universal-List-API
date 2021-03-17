@@ -11,7 +11,7 @@ router = APIRouter(
 class Stats(BaseModel):
     server_count: int
     shard_count: int
-    list_auth: dict
+    lists: dict
 
 class BList(BaseModel):
     url: str
@@ -38,7 +38,7 @@ async def legal(request: Request):
 
 @router.get("/lists")
 async def get_lists(request: Request):
-    lists = await db.fetch("SELECT icon, url, api_url, discord, description, supported_features, queue, owners FROM bot_list")
+    lists = await db.fetch("SELECT icon, url, api_url, discord, description, supported_features, owners FROM bot_list WHERE queue = false")
     if not lists:
         return ORJSONResponse({"message": "No lists found!"}, status_code = 404)
     lists = dict({"lists": lists})
@@ -97,6 +97,15 @@ async def delete_list(request: Request, url: str, API_Token: str = Header("")):
     await db.execute("DELETE FROM bot_list WHERE url = $1", url)
     return {"message": "Botlist Deleted. We are sad to see you go :(", "code": 1003}
 
+def ep_check(endpoint):
+    if not endpoint.api_path.startswith("/"):
+        return ORJSONResponse({"message": "API Path must start with /", "code": 1011}, status_code = 400)
+    if endpoint.method not in (1, 2, 3, 4, 5):
+        return ORJSONResponse({"message": "Endpoint method must be between 1 to 5, see API Docs for more info", "code": 1012}, status_code = 400)
+    if endpoint.feature not in (1, 2):
+        return ORJSONResponse({"message": "Endpoint feature must be 1 or 2 right now, see API Docs for more info", "code": 1013}, status_code = 400)
+    return None
+
 @router.put("/list/{url}/endpoints")
 async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token: str = Header("")):
     """
@@ -110,17 +119,50 @@ async def new_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token
         pass
     else:
         return abort(401)
-    if not endpoint.api_path.startswith("/"):
-        return ORJSONResponse({"message": "API Path must start with /", "code": 1011}, status_code = 400)
-    if endpoint.method not in (1, 2, 3, 4, 5):
-        return ORJSONResponse({"message": "Endpoint method must be between 1 to 5, see API Docs for more info", "code": 1012}, status_code = 400)
-    if endpoint.feature not in (1, 2):
-        return ORJSONResponse({"message": "Endpoint feature must be 1 or 2 right now, see API Docs for more info", "code": 1013}, status_code = 400)
+    rc = ep_check(endpoint)
+    if rc:
+        return rc
     check = await db.fetchrow("SELECT api_path FROM bot_list_api WHERE feature = $1 AND url = $2", endpoint.feature, url)
     if check:
         return ORJSONResponse({"message": "Endpoint cannot be created as its feature type already exists for your list!", "code": 1013}, status_code = 400)
     await db.execute("INSERT INTO bot_list_api (url, method, feature, supported_fields, api_path) VALUES ($1, $2, $3, $4, $5)", url, endpoint.method, endpoint.feature, orjson.dumps(endpoint.supported_fields).decode('utf-8'), endpoint.api_path)
     return {"message": "Added endpoint successfully", "code": 1003}
+
+@router.patch("/list/{url}/endpoints")
+async def edit_endpoint(request: Request, url: str, endpoint: Endpoint, API_Token: str = Header("")):
+    """
+        Edits an existing endpoint (Get Bot or Post Stats for right now). Note that the feature type cannot be changed and must already exist:
+
+        Method: 1 = GET, 2 = POST, 3 = PATCH, 4 = PUT, 5 = DELETE
+
+        Feature: 1 = Get Bot, 2 = Post Stats
+    """
+    if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
+        pass
+    else:
+        return abort(401)
+    rc = ep_check(endpoint)
+    if rc:
+        return rc
+    check = await db.fetchrow("SELECT api_path FROM bot_list_api WHERE feature = $1 AND url = $2", endpoint.feature, url)
+    if not check:
+        return ORJSONResponse({"message": "Endpoint cannot be editted as its feature type does not already exist", "code": 1020}, status_code = 400)
+    await db.execute("UPDATE bot_list_api SET method = $1, supported_fields = $2, api_path = $3 WHERE url = $4 AND feature = $5", endpoint.method, orjson.dumps(endpoint.supported_fields).decode('utf-8'), endpoint.api_path, url, endpoint.feature)
+    return {"message": "Editted endpoint successfully", "code": 1003}
+
+@router.delete("/list/{url}/endpoint/{feature}")
+async def delete_endpoint(request: Request, url: str, feature: int, API_Token: str = Header("")):
+    """
+        Deletes an existing endpoint (Get Bot or Post Stats for right now). Note that the endpoint must already exist or this won't do anything. There will not be a error if the endpoint doesn't already exists or if a invalid feature type is passed
+
+        Feature: 1 = Get Bot, 2 = Post Stats
+    """
+    if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
+        pass
+    else:
+        return abort(401)
+    await db.execute("DELETE FROM bot_list_api WHERE url = $1 AND feature = $2", url, feature)
+    return {"message": "Deleted endpoint successfully", "code": 1003}
 
 def get_method(method: str):
     if method == 1:
@@ -141,10 +183,10 @@ def get_method(method: str):
 @router.post("/bots/{bot_id}/stats")
 async def post_stats(request: Request, bot_id: int, stats: Stats):
     """
-        Post stats to all lists, takes a LIST_URL: LIST_API_TOKEN in the list_auth object in request body.
+        Post stats to all lists, takes a LIST_URL: LIST_API_TOKEN in the lists object in request body.
     """
     posted_lists = {"code": 1003}
-    for blist in stats.list_auth.keys():
+    for blist in stats.lists.keys():
 
         api_url = await db.fetchrow("SELECT api_url, queue FROM bot_list WHERE url = $1", blist)
         if api_url is None:
@@ -164,7 +206,7 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
         sf = orjson.loads(sf)
         # Get corresponding list values for server_count and shard_count
         send_json = {}
-        for key in "server_count", "shard_count", 'shards':
+        for key in supported_fields_posting:
             field = sf.get(key)
             if field:
                 send_json[field] = stats.__dict__[key]
@@ -178,7 +220,7 @@ async def post_stats(request: Request, bot_id: int, stats: Stats):
             posted_lists[blist] = {"posted": False, "reason": "Invalid request method defined on this API", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "method": None, "code": 1007}
 
         try:
-            rc = await f("https://" + api_url + api_path, json = send_json, headers = {"Authorization": str(stats.list_auth[blist])}, timeout = 15)
+            rc = await f("https://" + api_url + api_path, json = send_json, headers = {"Authorization": str(stats.lists[blist])}, timeout = 15)
         except Exception as e:
             posted_lists[blist] = {"posted": False, "reason": f"Could not connect/find server: {e}", "response": None, "status_code": None, "api_url": api_url, "api_path": api_path, "sent_data": send_json, "success": False, "method": api["method"], "code": 1008}
             continue
