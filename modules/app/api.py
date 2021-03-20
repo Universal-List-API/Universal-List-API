@@ -55,7 +55,7 @@ async def login_user(request: Request, access_token: str):
         await db.execute("INSERT INTO ula_user (user_id, api_token) VALUES ($1, $2)", int(user_json.get("id")), token)
     return user_json | {"api_token": token}
 
-@router.options("/lists")
+@router.options("/{some:path}")
 async def options_list(request: Request):
     return
 
