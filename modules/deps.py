@@ -36,7 +36,6 @@ from fastapi import FastAPI, Depends, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
-from aioredis.errors import ConnectionClosedError as ServerConnectionClosedError
 from discord_webhook import DiscordWebhook, DiscordEmbed
 import markdown
 from modules.emd_hab import emd
@@ -91,9 +90,9 @@ async def _internal_user_fetch(userid: str, bot_only: bool) -> Optional[dict]:
         return None # This is impossible to actually exist on the discord API or on our cache
 
     # Query redis cache for some important info
-    cache_redis = await redis_db.hgetall(f"{userid}_cache", encoding = 'utf-8')
-    if cache_redis is not None and cache_redis.get("cache_obj") is not None:
-        cache = orjson.loads(cache_redis["cache_obj"])
+    cache_redis = await redis_db.hget(f"{userid}_cache", key = 'cache_obj')
+    if cache_redis is not None:
+        cache = orjson.loads(cache_redis)
         if cache.get("fl_cache_ver") != CACHE_VER or cache.get("valid_user") is None or time.time() - cache['epoch'] > 60*60*8: # 8 Hour cacher
             # The cache is invalid, pass
             print("Not using cache for id ", userid)
@@ -195,144 +194,4 @@ def is_staff(staff_json: dict, roles: Union[list, int], base_perm: int) -> Union
         return False, tmp["perm"]
     return False, tmp["perm"]
 
-class templates():
-    @staticmethod
-    def TemplateResponse(f, arg_dict):
-        guild = client.get_guild(main_server)
-        try:
-            request = arg_dict["request"]
-        except:
-            raise KeyError
-        status = arg_dict.get("status_code")
-        if "userid" in request.session.keys():
-            arg_dict["css"] = request.session.get("user_css")
-            try:
-                user = guild.get_member(int(request.session["userid"]))
-            except:
-                user = None
-            if user is not None:
-                request.session["staff"] = is_staff(staff_roles, user.roles, 2)
-            else:
-                pass
-            arg_dict["staff"] = request.session.get("staff", [False])
-            arg_dict["avatar"] = request.session.get("avatar")
-            arg_dict["username"] = request.session.get("username")
-            arg_dict["userid"] = int(request.session.get("userid"))
-            arg_dict["user_token"] = request.session.get("token")
-        else:
-            arg_dict["staff"] = [False]
-        print(arg_dict["staff"])
-        arg_dict["site_url"] = site_url
-        if status is None:
-            return _templates.TemplateResponse(f, arg_dict)
-        return _templates.TemplateResponse(f, arg_dict, status_code = status)
 
-    @staticmethod
-    def error(f, arg_dict, status_code):
-        arg_dict["status_code"] = status_code
-        return templates.TemplateResponse(f, arg_dict)
-
-    @staticmethod
-    def e(request, reason: str, status_code: int = 404, *, main: Optional[str] = ""):
-        return templates.error("message.html", {"request": request, "message": main, "context": reason, "retmain": True}, status_code)
-
-def url_startswith(url, begin, slash = True):
-    # Slash indicates whether to check /route or /route/
-    if slash:
-       begin = begin + "/"
-    return str(url).startswith(site_url + begin)
-
-_templates = Jinja2Templates(directory="templates")
-
-def etrace(ex):
-    trace = []
-    tb = ex.__traceback__
-    while tb is not None:
-        trace.append({
-            "filename": tb.tb_frame.f_code.co_filename,
-            "name": tb.tb_frame.f_code.co_name,
-            "lineno": tb.tb_lineno
-        })
-        tb = tb.tb_next
-    return str({
-        'type': type(ex).__name__,
-        'message': str(ex),
-        'trace': trace
-    })
-
-
-class FLError():
-    @staticmethod
-    async def log(request, exc, error_id, curr_time):
-        site_errors = client.get_channel(site_errors_channel)
-        traceback = exc.__traceback__
-        try:
-            fl_info = f"Error ID: {error_id}\n\nMinimal output\n\n"
-            while traceback is not None:
-                fl_info += f"{traceback.tb_frame.f_code.co_filename}: {traceback.tb_lineno}\n"
-                traceback = traceback.tb_next
-            try:
-                fl_info += f"\n\nExtended output\n\n{etrace(exc)}"
-            except:
-                fl_info += f"\n\nExtended output\n\nNo extended output could be logged..."
-        except:
-            pass
-        await site_errors.send(f"500 (Internal Server Error) at {str(request.url).replace('https://', '')}\n\n**Error**: {exc}\n**Type**: {type(exc)}\n**Data**: File will be uploaded below if we didn't run into errors collecting logging information\n\n**Error ID**: {error_id}\n**Time When Error Happened**: {curr_time}")
-        fl_file = discord.File(io.BytesIO(bytes(fl_info, 'utf-8')), f'{error_id}.txt')
-        if fl_file is not None:
-            await site_errors.send(file=fl_file)
-        else:
-            await site_errors.send("No extra information could be logged and/or send right now")
-
-    @staticmethod
-    async def error_handler(request, exc):
-        error_id = str(uuid.uuid4())
-        curr_time = str(datetime.datetime.now())
-        try:
-            status_code = exc.status_code # Check for 500 using status code presence
-        except:
-            if type(exc) == RequestValidationError:
-                exc.status_code = 422
-            else:
-                exc.status_code = 500
-        if exc.status_code in [500, 501, 502, 503, 504, 507, 508, 510]:
-            asyncio.create_task(FLError.log(request, exc, error_id, curr_time))
-            return HTMLResponse(f"<strong>500 Internal Server Error</strong><br/>Fates List had a slight issue and our developers and looking into what happened<br/><br/>Error ID: {error_id}<br/>Time When Error Happened: {curr_time}", status_code=500)
-        if exc.status_code == 404:
-            if url_startswith(request.url, "/bot"):
-                msg = "Bot Not Found"
-                code = 404
-            elif url_startswith(request.url, "/profile"):
-                msg = "Profile Not Found"
-                code = 404
-            else:
-                msg = "404\nNot Found"
-                code = 404
-        elif exc.status_code == 401:
-            msg = "401\nNot Authorized"
-            code = 401
-        elif exc.status_code == 422:
-            if url_startswith(request.url, "/bot"):
-                msg = "Bot Not Found"
-                code = 404
-            elif url_startswith(request.url, "/profile"):
-                msg = "Profile Not Found"
-                code = 404
-            else:
-                msg = "Invalid Data Provided<br/>" + str(exc)
-                code = 422
-
-        json = url_startswith(request.url, "/api")
-        if json:
-            if exc.status_code != 422:
-                return await http_exception_handler(request, exc)
-            else:
-                return await request_validation_exception_handler(request, exc)
-        return templates.e(request, msg, code)
-
-async def render_index(request: Request, api: bool):
-    base_json = {} # Nothing for now
-    if not api:
-        return templates.TemplateResponse("index.html", {"request": request, "random": random} | base_json)
-    else:
-        return base_json

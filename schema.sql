@@ -2,6 +2,7 @@ CREATE TABLE bot_list (
 	icon TEXT,
 	url TEXT NOT NULL UNIQUE,
 	api_url TEXT,
+	api_docs TEXT,
 	discord TEXT,
 	description TEXT,
 	supported_features INTEGER[],
@@ -26,4 +27,9 @@ CREATE TABLE bot_list_api (
 	supported_fields JSONB, -- Supported fields
 	api_path TEXT NOT NULL,
 	CONSTRAINT url_constraint FOREIGN KEY (url) REFERENCES bot_list(url) ON DELETE CASCADE ON UPDATE CASCADE -- Autoupdate
+);
+
+CREATE TABLE ula_user (
+	user_id BIGINT NOT NULL,
+	api_token TEXT NOT NULL UNIQUE
 );

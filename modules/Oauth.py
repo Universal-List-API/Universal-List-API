@@ -64,9 +64,11 @@ class Oauth():
         headers = {
             'Content-Type': 'application/x-www-form-urlencoded'
         }
-
-        res = await requests.post(self.discord_token_url, data=payload, headers=headers)
-        json = await res.json()
+        try:
+            res = await requests.post(self.discord_token_url, data=payload, headers=headers)
+            json = await res.json()
+        except:
+            return None
         return {"access_token": json.get("access_token"), "refresh_token": json.get("refresh_token"), "expires_in": json.get("expires_in"), "current_time": time.time()}
 
     async def get_user_json(self, access_token):

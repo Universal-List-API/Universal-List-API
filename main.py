@@ -17,6 +17,7 @@ import aioredis
 import discord
 import importlib
 import builtins
+import time
 
 intent_main = discord.Intents.default()
 intent_main.typing = False
@@ -51,6 +52,18 @@ app.add_middleware(SessionMiddleware, secret_key=session_key)
 app.add_middleware(CSRFProtectMiddleware, csrf_secret=csrf_secret)
 app.add_middleware(ProxyHeadersMiddleware)
 
+@app.middleware('http')
+async def add_cors_pt_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    response.headers["Access-Control-Allow-Origin"] = '*'
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Bypass-Tunnel-Reminder, API-Token, User-API-Token"
+    return response
+
+
 print("NG BOTBLOCK: Loading Modules")
 # Include all the modules
 for f in os.listdir("modules/app"):
@@ -68,13 +81,13 @@ async def setup_db():
 async def startup():
     builtins.db = await setup_db()
     asyncio.create_task(client.start(TOKEN))
-    builtins.redis_db = await aioredis.create_redis_pool('redis://localhost')
+    builtins.redis_db = await aioredis.from_url('redis://localhost')
     limiter.init(redis_db, identifier = rl_key_func)
 
 @app.on_event("shutdown")
 async def close():
     print("Closing")
-    redis_db.close()
+    await redis_db.close()
     await redis_db.wait_closed()
 
 @client.event

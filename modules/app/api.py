@@ -5,6 +5,8 @@ router = APIRouter(
     include_in_schema = True
 )
 
+discord_o = Oauth()
+
 # Base Models
 
 class Lists(BaseModel):
@@ -18,10 +20,11 @@ class BList(BaseModel):
     url: str
     icon: Optional[str] = None
     api_url: str
+    api_docs: str
     discord: Optional[str] = None
     description: Optional[str] = "No Description Yet :("
     supported_features: List[int]
-    owners: List[int]
+    owners: List[str]
 
 class Endpoint(BaseModel):
     method: int
@@ -37,14 +40,45 @@ async def index(request: Request):
 async def legal(request: Request):
     return {"message": "Universal List API may potentially collect your IP address for ratelimiting. If you do not agree to this, please stop using this service immediately.", "code": 1003}
 
+@router.get("/login")
+async def login_user(request: Request, access_token: str):
+    """Takes in a access token and returns a API token, user_id, username, dash and avatar if it matches"""
+    user_json = await discord_o.get_user_json(access_token)
+    if user_json.get("id") is None:
+        return ORJSONResponse({"message": "Invalid Access Token"}, status_code = 400)
+    try:
+        token = await db.fetchval("SELECT api_token FROM ula_user WHERE user_id = $1", int(user_json.get("id")))
+    except:
+        return ORJSONResponse({"message": "Invalid User"}, status_code = 400)
+    if token is None:
+        token = get_token(132)
+        await db.execute("INSERT INTO ula_user (user_id, api_token) VALUES ($1, $2)", int(user_json.get("id")), token)
+    return user_json | {"api_token": token}
+
+@router.options("/lists")
+async def options_list(request: Request):
+    return
+
+@router.get("/list/{url}")
+async def get_a_list(request: Request, url: str):
+    lst = await db.fetchrow("SELECT icon, url, api_url, api_docs, discord, description, supported_features, owners, queue FROM bot_list WHERE url = $1", url)
+    if lst is None:
+        return abort(404)
+    return lst
+
 @router.get("/lists")
 async def get_lists(request: Request):
-    lists = await db.fetch("SELECT icon, url, api_url, discord, description, supported_features, owners FROM bot_list WHERE queue = false")
+    lists = await db.fetch("SELECT icon, url, api_url, api_docs, discord, description, supported_features, owners FROM bot_list WHERE queue = false")
     if not lists:
         return ORJSONResponse({"message": "No lists found!"}, status_code = 404)
     lists = dict({"lists": lists})
     ret = {"code": 1003}
     for l in lists["lists"]:
+        l = dict(l)
+        if l["api_docs"]:
+            pass
+        else:
+            l["api_docs"] = None # Make sure "" = None
         api = await db.fetch("SELECT method, feature AS api_type, supported_fields, api_path FROM bot_list_api WHERE url = $1", l["url"])
         api = [dict(obj) for obj in api]
         for api_ep in api:
@@ -54,39 +88,58 @@ async def get_lists(request: Request):
         ret = ret | {l["url"]: {"list": l, "api": api}}
     return ret
 
-def list_check(blist: BList):
-    if blist.url.startswith("http://") or blist.api_url.startswith("http://"):
+async def list_check(blist: BList, user_id: Optional[int] = None):
+    if blist.url.startswith("https://") or blist.api_url.startswith("https://"):
+        pass
+    else:
         return ORJSONResponse({"message": "List must use HTTPS and not HTTP", "code": 1000}, status_code = 400)
     blist.url = blist.url.replace("https://", "")
     blist.api_url = blist.api_url.replace("https://", "")
+    try:
+        blist.owners = [int(owner) for owner in blist.owners if owner.replace(" ", "") != ""]
+    except:
+        return ORJSONResponse({"message": "Invalid owner found", "code": 1001}, status_code = 400)
+    invalid_owners = [id for id in blist.owners if (await get_user(id)) is None]
+    if invalid_owners:
+        return ORJSONResponse({"message": "Invalid owner found", "code": 1001}, status_code = 400)
+    if user_id is not None and user_id not in blist.owners:
+        return ORJSONResponse({"message": "You must be a owner to add the list", "code": 1001}, status_code = 400)
     if len(blist.url.split(".")) < 2 or len(blist.api_url.split(".")) < 2:
         return ORJSONResponse({"message": "url and api_url keys must be proper URLs", "code": 1001}, status_code = 400)
     if len(blist.supported_features) > 20:
         return ORJSONResponse({"message": "Too many features have been set. To prevent abuse, you may only set 20 features", "code": 1010}, status_code = 400)
+    if len(blist.description) > 60:
+        return ORJSONResponse({"message": "Short description is too long and can only be a maximum of 60 characters long", "code": 1010}, status_code = 400)
     return None
 
 @router.put("/lists")
-async def new_list(request: Request, blist: BList):
-    rc = list_check(blist)
+async def new_list(request: Request, blist: BList, User_API_Token: str = Header("")):
+    """
+        Adds a new list if it exists. Your user id associated with your api token must be in owners array
+    """
+    user_id = await db.fetchval("SELECT user_id FROM ula_user WHERE api_token = $1", User_API_Token)
+    if user_id is None:
+        return abort(401)
+    rc = await list_check(blist, user_id)
     if rc:
         return rc
     api_token = str(uuid.uuid4())
     try:
-        await db.execute("INSERT INTO bot_list (url, icon, api_url, discord, description, supported_features, queue, api_token, owners) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", blist.url, blist.icon, blist.api_url, blist.discord, blist.description, blist.supported_features, True, api_token, blist.owners)
+        await db.execute("INSERT INTO bot_list (url, icon, api_url, api_docs, discord, description, supported_features, queue, api_token, owners) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", blist.url, blist.icon, blist.api_url, blist.api_docs, blist.discord, blist.description, blist.supported_features, True, api_token, blist.owners)
     except asyncpg.exceptions.UniqueViolationError:
         return ORJSONResponse({"message": "Botlist already exists", "code": 1002}, status_code = 400)
     return {"message": "Botlist Added :)", "api_token": api_token, "code": 1003}
 
 @router.patch("/list/{url}")
 async def edit_list(request: Request, url: str, blist: BList, API_Token: str = Header("")):
-    rc = list_check(blist)
+    rc = await list_check(blist)
     if rc:
         return rc
     if ((await db.fetchrow("SELECT url FROM bot_list WHERE api_token = $1 AND url = $2", API_Token, url))):
         pass
     else:
         return abort(401)
-    await db.execute("UPDATE bot_list SET url = $1, icon = $2, api_url = $3, discord = $4, description = $5, supported_features = $6, owners = $7 WHERE url = $8", blist.url, blist.icon, blist.api_url, blist.discord, blist.description, blist.supported_features, blist.owners, url)
+    await db.execute("UPDATE bot_list SET url = $1, icon = $2, api_url = $3, discord = $4, description = $5, supported_features = $6, owners = $7, api_docs = $8 WHERE url = $9", blist.url, blist.icon, blist.api_url, blist.discord, blist.description, blist.supported_features, blist.owners, blist.api_docs, url)
     return {"message": "Botlist Edited :)", "code": 1003}
 
 @router.delete("/list/{url}")
